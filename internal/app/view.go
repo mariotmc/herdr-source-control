@@ -148,53 +148,54 @@ func (m *Model) renderMain() string {
 	width, height := max(1, m.width), max(1, m.height)
 	size := ui.Classify(width, height)
 	if size == ui.SizeMinimum {
-		return fitScreen([]string{" Source Control", "", " Terminal too small", " Resize to at least 40x12.", "", " q: close"}, width, height)
+		return fitScreen([]string{m.styles.Title.Render(" SOURCE CONTROL"), "", m.styles.Warning.Render(" Terminal too small"), m.styles.Muted.Render(" Resize to at least 40x12."), "", " q: close"}, width, height)
 	}
 	compact := size != ui.SizeWide
 	small := size == ui.SizeSmall
-	refresh := "[Refresh]"
+	refresh := "Refresh"
 	if small {
-		refresh = "[R]"
+		refresh = "R"
 	}
-	if m.focus == FocusRefresh {
-		refresh = ">" + refresh
+	refresh = m.styles.ButtonText(refresh, m.focus == FocusRefresh)
+	title := m.styles.Title.Render(" SOURCE CONTROL")
+	root := " " + m.styles.Muted.Render(ui.Truncate(ui.EscapeText(ui.DisplayRoot(m.root)), width-2))
+	lines := []string{spread(title, refresh, width), root}
+	if !small {
+		lines = append(lines, m.divider(width))
 	}
-	lines := []string{spread(" Source Control", refresh, width), " " + ui.Truncate(ui.EscapeText(ui.DisplayRoot(m.root)), width-2)}
 	if m.snapshot != nil {
-		branch, upstream, counts := branchLines(m.snapshot.Branch, compact)
-		branchControl := "[" + branch + "]"
+		branch, upstreamPlain, countsPlain := branchLines(m.snapshot.Branch, compact)
+		syncLabel := "Sync"
 		if small {
-			branchControl = branch
+			syncLabel = "S"
 		}
-		if m.focus == FocusBranch {
-			branchControl = ">" + branchControl
-		}
-		sync := "[Sync]"
-		if small {
-			sync = "[S]"
-		}
-		if m.focus == FocusSync {
-			sync = ">" + sync
-		}
+		sync := m.styles.ButtonText(syncLabel, m.focus == FocusSync)
+		upstream := m.styles.Muted.Render(upstreamPlain)
+		counts := m.branchState(countsPlain, m.snapshot.Branch)
 		if size == ui.SizeWide {
-			lines = append(lines, "", spread(" "+branchControl+"  "+upstream+"  "+counts, sync, width), "")
+			reserved := lipgloss.Width(upstream) + lipgloss.Width(counts) + lipgloss.Width(sync) + 7
+			branch = ui.Truncate(branch, max(12, width-reserved))
+			branchControl := m.styles.ButtonText(branch, m.focus == FocusBranch)
+			lines = append(lines, spread(" "+branchControl+"  "+upstream+"  "+counts, sync, width), m.divider(width))
 		} else if size == ui.SizeNarrow {
-			lines = append(lines, "", " "+ui.Truncate(branchControl, width-2), spread(" "+upstream+"  "+counts, sync, width), "")
+			branch = ui.Truncate(branch, width-4)
+			branchControl := m.styles.ButtonText(branch, m.focus == FocusBranch)
+			metaWidth := max(1, width-lipgloss.Width(sync)-3)
+			meta := ui.Truncate(upstreamPlain+"  "+countsPlain, metaWidth)
+			lines = append(lines, " "+branchControl, spread(" "+m.styles.Muted.Render(meta), sync, width), m.divider(width))
 		} else {
-			lines = append(lines, " "+ui.Truncate(branchControl, width-2), spread(" "+counts, sync, width), "")
+			branch = ui.Truncate(branch, width-4)
+			branchControl := m.styles.ButtonText(branch, m.focus == FocusBranch)
+			lines = append(lines, " "+branchControl, spread(" "+counts, sync, width), m.divider(width))
 		}
 	} else {
-		lines = append(lines, "")
+		if small {
+			lines = append(lines, m.divider(width))
+		}
 	}
 	bodyHeight := max(1, height-len(lines)-2)
 	lines = append(lines, m.renderBody(size, bodyHeight)...)
-	help := " Tab focus  Enter activate  b branches  s sync  r refresh  ? help  q close"
-	if size == ui.SizeNarrow {
-		help = " b branches  s sync  r refresh  ? help"
-	} else if size == ui.SizeSmall {
-		help = " b branch  ? help"
-	}
-	lines = append(lines, ui.Truncate(help, width), ui.Truncate(" "+m.statusLine(), width))
+	lines = append(lines, m.helpLine(size, width), m.statusFooter(size, width))
 	return fitScreen(lines, width, height)
 }
 
@@ -204,17 +205,17 @@ func (m *Model) renderBody(size ui.Size, height int) []string {
 			message := m.lastError.Error()
 			switch message {
 			case "No Git repository found.":
-				return clipLines([]string{" No Git repository found", " Source Control could not find a working tree from:", " " + ui.EscapeText(m.root), "", " Initialize or open a repository, then refresh.", " [Refresh]"}, height)
+				return clipLines([]string{m.styles.Warning.Render(" No Git repository found"), m.styles.Muted.Render(" Source Control could not find a working tree from:"), " " + ui.EscapeText(m.root), "", " Initialize or open a repository, then refresh.", " " + m.styles.ButtonText("Refresh", m.focus == FocusRefresh)}, height)
 			case "Git is not installed or not in PATH.":
-				return clipLines([]string{" Git is not available", " Install Git and ensure \"git\" is on PATH, then refresh.", " [Refresh]"}, height)
+				return clipLines([]string{m.styles.Error.Render(" Git is not available"), m.styles.Muted.Render(" Install Git and ensure \"git\" is on PATH, then refresh."), " " + m.styles.ButtonText("Refresh", m.focus == FocusRefresh)}, height)
 			default:
-				return clipLines([]string{" Repository unavailable", " " + message, "", " [Refresh]"}, height)
+				return clipLines([]string{m.styles.Error.Render(" Repository unavailable"), " " + message, "", " " + m.styles.ButtonText("Refresh", m.focus == FocusRefresh)}, height)
 			}
 		}
-		return clipLines([]string{" Loading repository..."}, height)
+		return clipLines([]string{m.styles.Info.Render(" | Loading repository...")}, height)
 	}
 	if len(m.rows) == 0 {
-		return clipLines([]string{" Working tree clean", " No staged, modified, conflicting, or untracked files."}, height)
+		return clipLines([]string{m.styles.Success.Render(" ✓ Working tree clean"), m.styles.Muted.Render("   No staged, modified, conflicting, or untracked files.")}, height)
 	}
 	start := min(m.scrollOffset, max(0, len(m.rows)-height))
 	end := min(len(m.rows), start+height)
@@ -232,22 +233,25 @@ func (m *Model) renderBody(size ui.Size, height int) []string {
 					label = "CHANGES"
 				}
 			}
-			lines = append(lines, fmt.Sprintf(" %s (%d)", label, row.Count))
+			heading := m.styles.Group(row.Group).Render(" " + label)
+			count := m.styles.Muted.Render(fmt.Sprintf("  %d", row.Count))
+			remaining := max(0, m.width-lipgloss.Width(heading)-lipgloss.Width(count)-2)
+			lines = append(lines, heading+count+"  "+m.styles.Divider.Render(strings.Repeat("─", remaining)))
 			continue
 		}
 		selected := "  "
 		if row.Identity == m.selected && m.focus == FocusChanges {
-			selected = "> "
+			selected = "› "
 		}
-		compact := size != ui.SizeWide
-		status := ui.StatusLabel(row.Resource, compact)
-		statusWidth := 12
-		if compact {
-			statusWidth = 2
-		}
-		prefix := selected + fmt.Sprintf("%-*s", statusWidth, status)
+		status := ui.StatusLabel(row.Resource, true)
+		status = m.styles.Status(row.Resource.Status, row.Resource.Untracked).Render(fmt.Sprintf("%-2s", status))
+		prefix := selected + status + " "
 		path := ui.Truncate(ui.DisplayPath(row.Resource), max(1, m.width-lipgloss.Width(prefix)-1))
-		lines = append(lines, prefix+path)
+		line := prefix + path
+		if row.Identity == m.selected && m.focus == FocusChanges {
+			line = m.styles.Selected.Width(m.width).Render(line)
+		}
+		lines = append(lines, line)
 	}
 	return clipLines(lines, height)
 }
@@ -270,12 +274,16 @@ func (m *Model) renderModal(background string) string {
 
 func (m *Model) renderBranchesModal(width, height int) string {
 	inner := width - 4
-	lines := []string{centerTitle("Switch Branch", inner), " Search: " + ui.Truncate(m.input.View(), inner-9)}
+	lines := []string{centerTitle(m.styles.ModalTitle.Render("Switch Branch"), inner), m.styles.Muted.Render(" Search") + "  " + ui.Truncate(m.input.View(), inner-10)}
 	createMarker := "  "
 	if m.branchIndex == 0 {
-		createMarker = "> "
+		createMarker = "› "
 	}
-	lines = append(lines, createMarker+"+ Create new branch...")
+	createLine := createMarker + "+ Create new branch..."
+	if m.branchIndex == 0 {
+		createLine = m.styles.Selected.Width(inner).Render(createLine)
+	}
+	lines = append(lines, createLine)
 	capacity := max(1, (height-6)/2)
 	start := 0
 	if m.branchIndex > capacity {
@@ -294,45 +302,50 @@ func (m *Model) renderBranchesModal(width, height int) string {
 		second := ui.EscapeText(branch.Author) + "  " + shortOID(branch.OID) + "  " + ui.EscapeText(branch.Subject)
 		marker := "  "
 		if start+index+1 == m.branchIndex {
-			marker = "> "
+			marker = "› "
 		}
-		lines = append(lines, marker+ui.Truncate(first, inner-2), "  "+ui.Truncate(second, inner-2))
+		firstLine := marker + ui.Truncate(first, inner-2)
+		secondLine := "  " + m.styles.Muted.Render(ui.Truncate(second, inner-2))
+		if start+index+1 == m.branchIndex {
+			firstLine = m.styles.Selected.Width(inner).Render(firstLine)
+		}
+		lines = append(lines, firstLine, secondLine)
 	}
-	footer := "[Cancel]"
+	footer := m.styles.ButtonText("Cancel", false)
 	if m.mutation == OperationCheckout {
-		footer = "| checkout in progress..."
+		footer = m.styles.Info.Render("| checkout in progress...")
 	}
-	lines = append(lines, spread(fmt.Sprintf(" %d branches", len(m.filtered)), footer, inner))
-	return box(lines, width, height)
+	lines = append(lines, spread(m.styles.Muted.Render(fmt.Sprintf(" %d branches", len(m.filtered))), footer, inner))
+	return box(lines, width, height, m.styles.ModalBorder)
 }
 
 func (m *Model) renderCreateModal(width, height int) string {
 	inner := width - 4
-	create, cancel := "[Create]", "[Cancel]"
-	if m.createFocus == 1 {
-		create = ">" + create
-	}
-	if m.createFocus == 2 {
-		cancel = ">" + cancel
-	}
+	create := m.styles.ButtonText("Create", m.createFocus == 1)
+	cancel := m.styles.ButtonText("Cancel", m.createFocus == 2)
 	errorLine := ""
 	if m.status.Error {
 		errorLine = m.status.Text
 	} else if m.mutation == OperationCreateBranch {
 		errorLine = "| create branch in progress..."
 	}
+	if m.status.Error {
+		errorLine = m.styles.Error.Render(errorLine)
+	} else {
+		errorLine = m.styles.Info.Render(errorLine)
+	}
 	lines := []string{
-		centerTitle("Create Branch", inner), " New branch name", " " + ui.Truncate(m.input.View(), inner-1), "",
-		" Creates from current HEAD and switches to the branch.", "", " " + ui.Truncate(errorLine, inner-1), "",
+		centerTitle(m.styles.ModalTitle.Render("Create Branch"), inner), m.styles.Muted.Render(" New branch name"), " " + ui.Truncate(m.input.View(), inner-1), "",
+		m.styles.Muted.Render(" Creates from current HEAD and switches to the branch."), "", " " + errorLine, "",
 		spread("", create+" "+cancel, inner),
 	}
 	if height < 11 {
 		lines = []string{
-			centerTitle("Create Branch", inner), " New branch name", " " + ui.Truncate(m.input.View(), inner-1),
-			" " + ui.Truncate(errorLine, inner-1), spread("", create+" "+cancel, inner),
+			centerTitle(m.styles.ModalTitle.Render("Create Branch"), inner), m.styles.Muted.Render(" New branch name"), " " + ui.Truncate(m.input.View(), inner-1),
+			" " + errorLine, spread("", create+" "+cancel, inner),
 		}
 	}
-	return box(lines, width, height)
+	return box(lines, width, height, m.styles.ModalBorder)
 }
 
 func (m *Model) renderHelpModal(width, height int) string {
@@ -350,10 +363,10 @@ func (m *Model) renderHelpModal(width, height int) string {
 	maxOffset := max(0, len(content)-available)
 	offset := min(m.helpOffset, maxOffset)
 	end := min(len(content), offset+available)
-	lines := []string{centerTitle("Help", width-4)}
+	lines := []string{centerTitle(m.styles.ModalTitle.Render("Help"), width-4)}
 	lines = append(lines, content[offset:end]...)
-	lines = append(lines, " Esc closes help.  Up/Down scroll.")
-	return box(lines, width, height)
+	lines = append(lines, m.styles.Muted.Render(" Esc closes help.  Up/Down scroll."))
+	return box(lines, width, height, m.styles.ModalBorder)
 }
 
 func branchLines(branch domain.BranchState, compact bool) (string, string, string) {
@@ -373,21 +386,73 @@ func branchLines(branch domain.BranchState, compact bool) (string, string, strin
 	counts := ""
 	if branch.CountsKnown {
 		if compact {
-			counts = fmt.Sprintf("+%d -%d", branch.Ahead, branch.Behind)
+			counts = fmt.Sprintf("↑%d ↓%d", branch.Ahead, branch.Behind)
 		} else {
 			switch {
 			case branch.Ahead == 0 && branch.Behind == 0:
-				counts = "Up to date"
+				counts = "✓ Up to date"
 			case branch.Ahead > 0 && branch.Behind > 0:
-				counts = fmt.Sprintf("Ahead %d, behind %d", branch.Ahead, branch.Behind)
+				counts = fmt.Sprintf("↑ Ahead %d  ↓ Behind %d", branch.Ahead, branch.Behind)
 			case branch.Ahead > 0:
-				counts = fmt.Sprintf("Ahead %d", branch.Ahead)
+				counts = fmt.Sprintf("↑ Ahead %d", branch.Ahead)
 			default:
-				counts = fmt.Sprintf("Behind %d", branch.Behind)
+				counts = fmt.Sprintf("↓ Behind %d", branch.Behind)
 			}
 		}
 	}
 	return name, upstream, counts
+}
+
+func (m *Model) divider(width int) string {
+	return m.styles.Divider.Render(strings.Repeat("─", max(0, width)))
+}
+
+func (m *Model) branchState(text string, branch domain.BranchState) string {
+	if text == "" {
+		return ""
+	}
+	if branch.CountsKnown && branch.Ahead == 0 && branch.Behind == 0 {
+		return m.styles.Success.Render(text)
+	}
+	if branch.Behind > 0 {
+		return m.styles.Warning.Render(text)
+	}
+	return m.styles.Info.Render(text)
+}
+
+func (m *Model) helpLine(size ui.Size, width int) string {
+	hint := func(key, label string) string {
+		return m.styles.FooterKey.Render(key) + m.styles.Muted.Render(" "+label)
+	}
+	var hints []string
+	switch size {
+	case ui.SizeWide:
+		hints = []string{hint("Tab", "focus"), hint("Enter", "open"), hint("b", "branch"), hint("s", "sync"), hint("r", "refresh"), hint("?", "help"), hint("q", "close")}
+	case ui.SizeNarrow:
+		hints = []string{hint("b", "branch"), hint("s", "sync"), hint("r", "refresh"), hint("?", "help")}
+	default:
+		hints = []string{hint("b", "branch"), hint("?", "help"), hint("q", "close")}
+	}
+	return lipgloss.NewStyle().MaxWidth(width).Render(" " + strings.Join(hints, m.styles.Muted.Render("   ")))
+}
+
+func (m *Model) statusFooter(size ui.Size, width int) string {
+	text := m.statusLine()
+	style := m.styles.Info
+	switch {
+	case m.status.Error:
+		style = m.styles.Error
+	case m.stale:
+		style = m.styles.Warning
+	case text == "Ready":
+		style = m.styles.Success
+	}
+	left := " " + style.Render(text)
+	if size == ui.SizeSmall {
+		return lipgloss.NewStyle().MaxWidth(width).Render(left)
+	}
+	right := m.styles.Muted.Render("auto-refresh 2s ")
+	return spread(left, right, width)
 }
 
 func (m *Model) statusLine() string {
@@ -397,7 +462,7 @@ func (m *Model) statusLine() string {
 	if m.mutation != OperationNone {
 		return "| " + operationName(m.mutation) + " in progress..."
 	}
-	if m.refreshBusy {
+	if m.refreshBusy && m.refreshVisible {
 		return "| Refreshing repository..."
 	}
 	if m.stale {
@@ -415,7 +480,7 @@ func fitScreen(lines []string, width, height int) string {
 		lines = append(lines, "")
 	}
 	for index := range lines {
-		lines[index] = ui.Truncate(lines[index], width)
+		lines[index] = lipgloss.NewStyle().MaxWidth(width).Render(lines[index])
 	}
 	return strings.Join(lines, "\n")
 }
@@ -436,19 +501,19 @@ func spread(left, right string, width int) string {
 	return left + strings.Repeat(" ", space) + right
 }
 
-func box(lines []string, width, height int) string {
+func box(lines []string, width, height int, border lipgloss.Style) string {
 	inner := max(1, width-2)
 	lines = clipLines(lines, max(1, height-2))
 	for len(lines) < height-2 {
 		lines = append(lines, "")
 	}
 	var output []string
-	output = append(output, "+"+strings.Repeat("-", inner)+"+")
+	output = append(output, border.Render("╭"+strings.Repeat("─", inner)+"╮"))
 	for _, line := range lines {
-		line = ui.Truncate(line, inner)
-		output = append(output, "|"+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+"|")
+		line = lipgloss.NewStyle().MaxWidth(inner).Render(line)
+		output = append(output, border.Render("│")+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+border.Render("│"))
 	}
-	output = append(output, "+"+strings.Repeat("-", inner)+"+")
+	output = append(output, border.Render("╰"+strings.Repeat("─", inner)+"╯"))
 	return strings.Join(output, "\n")
 }
 

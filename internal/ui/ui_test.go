@@ -52,6 +52,15 @@ func TestUnknownStatusLabelPreservesRawCode(t *testing.T) {
 	}
 }
 
+func TestStylesRespectNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	styles := NewStyles()
+	rendered := styles.Title.Render("title") + styles.ButtonText("button", true) + styles.Status(domain.StatusModified, false).Render("M")
+	if strings.Contains(rendered, "38;") || strings.Contains(rendered, "48;") {
+		t.Fatalf("NO_COLOR output contains ANSI color: %q", rendered)
+	}
+}
+
 func TestClassifyResponsiveSizes(t *testing.T) {
 	cases := []struct {
 		width, height int

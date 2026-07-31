@@ -44,10 +44,11 @@ func (m *Model) requestRefresh(reason RefreshReason) tea.Cmd {
 	return m.startRefresh(reason, OperationNone)
 }
 
-func (m *Model) startRefresh(_ RefreshReason, syncPhase Operation) tea.Cmd {
+func (m *Model) startRefresh(reason RefreshReason, syncPhase Operation) tea.Cmd {
 	m.nextRequestID++
 	id, epoch := m.nextRequestID, m.repositoryEpoch
 	m.refreshID, m.refreshBusy, m.syncRefreshPhase = id, true, syncPhase
+	m.refreshVisible = reason&(RefreshStartup|RefreshManual|RefreshMutation) != 0
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.refreshCancel = cancel
 	repo, factory, root := m.repo, m.factory, m.root

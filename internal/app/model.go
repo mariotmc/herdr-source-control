@@ -90,6 +90,7 @@ type Model struct {
 	factory RepositoryFactory
 	root    string
 	logger  *slog.Logger
+	styles  ui.Styles
 
 	width, height int
 	mode          Mode
@@ -112,6 +113,7 @@ type Model struct {
 	nextRequestID        uint64
 	refreshID            uint64
 	refreshBusy          bool
+	refreshVisible       bool
 	refreshCancel        context.CancelFunc
 	queuedRefreshReasons RefreshReason
 	repositoryEpoch      uint64
@@ -149,7 +151,7 @@ func New(config Config) *Model {
 	model := &Model{
 		ctx: ctx, cancel: cancel, repo: config.Repository, factory: config.RepositoryFactory,
 		root: config.StartRoot, logger: logger, mode: ModeMain, focus: FocusRefresh,
-		input: input, lastError: config.InitialError,
+		input: input, styles: ui.NewStyles(), lastError: config.InitialError,
 	}
 	if config.InitialError != nil {
 		model.status = StatusMessage{Text: config.InitialError.Error(), Error: true}

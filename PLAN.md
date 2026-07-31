@@ -232,7 +232,7 @@ Rules:
 
 ### 5.3 Visible statuses
 
-Wide/narrow labels:
+Rows use compact status codes at every width; color supplements these text codes:
 
 | Git state | Label | Compact code |
 | --- | --- | --- |
@@ -264,6 +264,8 @@ Render a rename or copy as `old/path -> new/path`. Use ASCII `->`, not a Unicode
   mutation; poll requests are dropped.
 - A failed refresh preserves the last successful snapshot, marks it stale, and displays error
   feedback.
+- Background poll and focus refreshes do not replace the stable footer status with progress text.
+  Initial, manual, and mutation refreshes remain visible.
 - Manual refresh also clears a transient informational message and retries repository discovery.
 - Refresh never fetches or contacts a remote. Ahead/behind reflects local remote-tracking refs
   until Sync or another process fetches.
@@ -413,65 +415,58 @@ terminal plugin. Do not add VS Code's broader behavior implicitly while fixing a
 ### 6.2 Main wide layout (`>= 96x24`)
 
 ```text
- Source Control                                              [Refresh]
+ SOURCE CONTROL                                               Refresh
  /home/user/project
-
- [Branch: feature/source-control]  origin/feature/source-control  +2 -0  [Sync]
-
- MERGE CHANGES (1)
- > Conflict     app/models/user.go
-
- STAGED CHANGES (2)
-   Added        internal/git/status.go
-   Modified     README.md
-
- CHANGES (3)
-   Modified     cmd/herdr-source-control/main.go
-   Deleted      docs/old.md
-   Untracked    notes.txt
-
- Tab focus  Enter activate  b branches  s sync  r refresh  ? help  q close
- Ready
+────────────────────────────────────────────────────────────────────
+ Branch: feature/source-control  origin/feature/source-control  ↑2  ↓0  Sync
+────────────────────────────────────────────────────────────────────
+ MERGE CHANGES  1  ─────────────────────────────────────────────────
+› !  app/models/user.go
+ STAGED CHANGES  2  ────────────────────────────────────────────────
+  A  internal/git/status.go
+  M  README.md
+ CHANGES  3  ───────────────────────────────────────────────────────
+  M  cmd/herdr-source-control/main.go
+  D  docs/old.md
+  U  notes.txt
+ Tab focus   Enter open   b branch   s sync   r refresh   ? help   q close
+ Ready                                                   auto-refresh 2s
 ```
 
 ### 6.3 Narrow layout (`60-95` columns, `>=18` rows)
 
 ```text
- Source Control                              [Refresh]
+ SOURCE CONTROL                               Refresh
  ~/project
-
- [Branch: feature/source-control]
- origin/feature/source-control  +2 -0  [Sync]
-
- STAGED CHANGES (2)
- > A internal/git/status.go
-   M README.md
-
- CHANGES (3)
-   M cmd/herdr-source-control/main.go
-   D docs/old.md
-   U notes.txt
-
- b branches  s sync  r refresh  ? help
- Ready
+────────────────────────────────────────────────────────
+ Branch: feature/source-control
+ origin/feature/source-control  ↑2 ↓0              Sync
+────────────────────────────────────────────────────────
+ STAGED CHANGES  2  ────────────────────────────────────
+› A  internal/git/status.go
+  M  README.md
+ CHANGES  3  ───────────────────────────────────────────
+  M  cmd/herdr-source-control/main.go
+  D  docs/old.md
+  U  notes.txt
+ b branch   s sync   r refresh   ? help
+ Ready                                 auto-refresh 2s
 ```
 
 ### 6.4 Small layout (`40-59` columns or `12-17` rows)
 
 ```text
- Source Control                    [R]
+ SOURCE CONTROL                      R
  ~/project
  Branch: feature/source-control
- +2 -0                             [S]
-
- STAGED (2)
- > A internal/git/status.go
-   M README.md
-
- CHANGES (3)
-   M cmd/herdr-source.../main.go
-
- b branch  ? help
+ ↑2 ↓0                               S
+────────────────────────────────────────
+ STAGED  2  ────────────────────────────
+› A  internal/git/status.go
+  M  README.md
+ CHANGES  3  ───────────────────────────
+  M  cmd/herdr-source.../main.go
+ b branch   ? help   q close
  Ready
 ```
 
@@ -495,7 +490,7 @@ Below `40x12`, render only:
 - Never let body content overwrite the final Help and Status rows.
 - Group headings remain visible as ordinary list rows; they are not selectable.
 - Selection remains in view when navigating or resizing.
-- Wide labels contract to status codes before essential path content is removed.
+- Status codes and paths remain visible before secondary metadata.
 - The branch name may truncate in the middle but must never overwrite Sync.
 
 ### 6.6 Focus order
@@ -514,8 +509,8 @@ Initial focus:
 - Branch control when the working tree is clean
 - Refresh in the No Repository or load-error state
 
-Focused controls are distinguishable without color. Buttons remain bracketed; focused buttons
-receive a leading `>` where space permits. A selected row begins with `>`.
+Focused controls are distinguishable without color through reverse video. A selected row begins
+with `›` and receives a full-row background highlight.
 
 ### 6.7 Main keymap
 

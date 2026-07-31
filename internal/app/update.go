@@ -62,7 +62,7 @@ func (m *Model) snapshotLoaded(msg snapshotLoadedMsg) tea.Cmd {
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 	}
-	m.refreshBusy, m.refreshCancel = false, nil
+	m.refreshBusy, m.refreshVisible, m.refreshCancel = false, false, nil
 	phase := m.syncRefreshPhase
 	m.syncRefreshPhase = OperationNone
 	if msg.Err != nil {
@@ -200,6 +200,7 @@ func (m *Model) startMutation(operation Operation, detail any) tea.Cmd {
 		m.refreshCancel()
 	}
 	m.refreshCancel, m.refreshBusy = nil, false
+	m.refreshVisible = false
 	m.nextRequestID++
 	m.refreshID = m.nextRequestID
 	m.queuedRefreshReasons |= RefreshMutation
