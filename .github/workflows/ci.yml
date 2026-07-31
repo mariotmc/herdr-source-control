@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - name: Verify versions
+        shell: bash
+        run: |
+          version=$(<VERSION)
+          manifest_version=$(awk -F '"' '$1 == "version = " { print $2 }' herdr-plugin.toml)
+          test -n "$version"
+          test "$version" = "$manifest_version"
+      - name: Check formatting
+        shell: bash
+        run: |
+          files=$(gofmt -l .)
+          test -z "$files" || { printf 'Run gofmt on:\n%s\n' "$files"; exit 1; }
+      - name: Check shell syntax
+        run: sh -n scripts/build.sh scripts/install-release.sh
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/herdr-source-control
+      - name: Verify Linux arm64 build
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/herdr-source-control
