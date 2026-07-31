@@ -120,7 +120,7 @@ when its action is invoked.
 Reinstall from GitHub to update the plugin and its verified binary:
 
 ```sh
-herdr plugin install -y mariotmc/herdr-source-control
+herdr plugin install mariotmc/herdr-source-control --yes
 ```
 
 Your Herdr keybinding and plugin state directory are not modified by the release installer.
