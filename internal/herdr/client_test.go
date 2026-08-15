@@ -85,6 +85,77 @@ func TestExecRunnerCapturesStderr(t *testing.T) {
 	}
 }
 
+func TestListPanesParsesLabelAndCWD(t *testing.T) {
+	client := &Client{Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"result":{"panes":[{"cwd":"/home/me/Project-Lairn","label":"Source Control","pane_id":"w1:pG","tab_id":"w1:tD","workspace_id":"w1"}]}}`), nil
+	})}
+
+	panes, err := client.ListPanes(context.Background(), "w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("ListPanes() = %#v", panes)
+	}
+	pane := panes[0]
+	if pane.ID != "w1:pG" || pane.TabID != "w1:tD" || pane.Label != "Source Control" || pane.CWD != "/home/me/Project-Lairn" {
+		t.Fatalf("pane = %#v", pane)
+	}
+	if pane.Tokens[PluginID] != "" {
+		t.Fatalf("restored pane carried a token: %#v", pane.Tokens)
+	}
+}
+
+func TestRunInPaneAndFocusTabArgv(t *testing.T) {
+	var args []string
+	client := &Client{Runner: runnerFunc(func(_ context.Context, _ string, gotArgs ...string) ([]byte, error) {
+		args = append([]string(nil), gotArgs...)
+		return nil, nil
+	})}
+
+	if err := client.RunInPane(context.Background(), "w1:pG", []string{"env", "HERDR_PANE_ID=w1:pG", "/plugin/bin/herdr-source-control", "tui"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "pane|run|w1:pG|env|HERDR_PANE_ID=w1:pG|/plugin/bin/herdr-source-control|tui"
+	if got := strings.Join(args, "|"); got != want {
+		t.Fatalf("RunInPane() argv = %q, want %q", got, want)
+	}
+
+	if err := client.FocusTab(context.Background(), "w1:tD"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(args, "|"); got != "tab|focus|w1:tD" {
+		t.Fatalf("FocusTab() argv = %q", got)
+	}
+}
+
+func TestIsIdleShell(t *testing.T) {
+	tests := []struct {
+		name string
+		info ProcessInfo
+		want bool
+	}{
+		{"restored shell", ProcessInfo{ForegroundProcesses: []Process{{Name: "bash", Argv: []string{"/usr/bin/bash"}}}}, true},
+		{"login shell", ProcessInfo{ForegroundProcesses: []Process{{Name: "zsh", Argv: []string{"-zsh"}}}}, true},
+		{"our binary", ProcessInfo{ForegroundProcesses: []Process{{Argv: []string{"/plugin/herdr-source-control", "tui"}}}}, false},
+		{"our binary in another mode", ProcessInfo{ForegroundProcesses: []Process{{Argv: []string{"herdr-source-control", "open"}}}}, false},
+		{"user program", ProcessInfo{ForegroundProcesses: []Process{{Name: "vim", Argv: []string{"/usr/bin/vim"}}}}, false},
+		{"shell running a program", ProcessInfo{ForegroundProcesses: []Process{
+			{Name: "bash", Argv: []string{"/usr/bin/bash"}},
+			{Name: "psql", Argv: []string{"/usr/bin/psql"}},
+		}}, false},
+		{"empty", ProcessInfo{}, false},
+		{"unidentifiable", ProcessInfo{ForegroundProcesses: []Process{{}}}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsIdleShell(test.info); got != test.want {
+				t.Fatalf("IsIdleShell() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestClassifyLiveness(t *testing.T) {
 	tests := []struct {
 		name string

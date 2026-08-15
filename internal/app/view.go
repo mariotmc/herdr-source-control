@@ -447,12 +447,39 @@ func (m *Model) statusFooter(size ui.Size, width int) string {
 	case text == "Ready":
 		style = m.styles.Success
 	}
+	if text == "Ready" && size != ui.SizeSmall {
+		text += " · " + m.fetchStatus()
+	}
 	left := " " + style.Render(text)
 	if size == ui.SizeSmall {
 		return lipgloss.NewStyle().MaxWidth(width).Render(left)
 	}
-	right := m.styles.Muted.Render("auto-refresh 2s ")
+	right := m.styles.Muted.Render("refresh 2s · fetch 3m ")
 	return spread(left, right, width)
+}
+
+func (m *Model) fetchStatus() string {
+	switch {
+	case m.lastFetchFailed && !m.lastFetchAttempt.IsZero():
+		return "check failed " + fetchAge(time.Since(m.lastFetchAttempt))
+	case !m.lastFetchSuccess.IsZero():
+		return "checked " + fetchAge(time.Since(m.lastFetchSuccess))
+	default:
+		return "not checked yet"
+	}
+}
+
+func fetchAge(duration time.Duration) string {
+	switch {
+	case duration < time.Minute:
+		return "just now"
+	case duration < time.Hour:
+		return fmt.Sprintf("%dm ago", int(duration.Minutes()))
+	case duration < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(duration.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(duration.Hours()/24))
+	}
 }
 
 func (m *Model) statusLine() string {

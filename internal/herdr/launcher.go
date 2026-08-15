@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 )
 
@@ -84,6 +85,7 @@ func (l *Launcher) Open(ctx context.Context) (OpenResult, error) {
 			if err := l.Client.FocusPane(ctx, pane.ID); err != nil {
 				return OpenResult{}, err
 			}
+			l.closeRestoredDuplicates(ctx, panes, target)
 			return OpenResult{Target: target, PaneID: pane.ID, TabID: pane.TabID}, nil
 		}
 		if err := l.Client.ClosePane(ctx, pane.ID); err != nil {
@@ -93,6 +95,15 @@ func (l *Launcher) Open(ctx context.Context) (OpenResult, error) {
 			return OpenResult{}, err
 		}
 		break
+	}
+
+	reclaimed, ok, err := l.reclaim(ctx, panes, target)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	if ok {
+		l.closeRestoredDuplicates(ctx, panes, target, reclaimed.PaneID)
+		return reclaimed, nil
 	}
 
 	opened, err := l.Client.OpenPane(ctx, OpenPaneRequest{
@@ -114,6 +125,76 @@ func (l *Launcher) Open(ctx context.Context) (OpenResult, error) {
 		return OpenResult{}, err
 	}
 	return OpenResult{Target: target, PaneID: opened.PaneID, TabID: opened.TabID, Opened: true}, nil
+}
+
+// reclaim restarts the plugin inside a pane that Herdr's snapshot restore brought back as a
+// bare shell. Herdr persists only a pane's label and cwd, never our identity token, so a
+// restored pane is unrecognisable by token and would otherwise cause a duplicate tab.
+func (l *Launcher) reclaim(ctx context.Context, panes []Pane, target Target) (OpenResult, bool, error) {
+	binary, err := pluginBinary()
+	if err != nil {
+		return OpenResult{}, false, nil
+	}
+	for _, pane := range panes {
+		if !l.isRestoredPane(ctx, pane, target) {
+			continue
+		}
+		argv := []string{"env",
+			"HERDR_SOURCE_CONTROL_ROOT=" + target.Root,
+			"HERDR_SOURCE_CONTROL_ID=" + target.Identity,
+			"HERDR_PANE_ID=" + pane.ID,
+			binary, "tui"}
+		if err := l.Client.RunInPane(ctx, pane.ID, argv); err != nil {
+			return OpenResult{}, false, err
+		}
+		if err := l.Client.ReportIdentity(ctx, pane.ID, target.Identity); err != nil {
+			return OpenResult{}, false, fmt.Errorf("report pane identity: %w", err)
+		}
+		if err := l.Client.RenameTab(ctx, pane.TabID); err != nil {
+			return OpenResult{}, false, err
+		}
+		if err := l.Client.FocusTab(ctx, pane.TabID); err != nil {
+			return OpenResult{}, false, err
+		}
+		return OpenResult{Target: target, PaneID: pane.ID, TabID: pane.TabID}, true, nil
+	}
+	return OpenResult{}, false, nil
+}
+
+// closeRestoredDuplicates removes leftover restored panes for this repository once a live one
+// is in use, which is what leaves a user with one working and one blank Source Control tab.
+// Best effort: failing to tidy up must never fail the open.
+func (l *Launcher) closeRestoredDuplicates(ctx context.Context, panes []Pane, target Target, keep ...string) {
+	for _, pane := range panes {
+		if slices.Contains(keep, pane.ID) || !l.isRestoredPane(ctx, pane, target) {
+			continue
+		}
+		_ = l.Client.ClosePlainPane(ctx, pane.ID)
+	}
+}
+
+// isRestoredPane reports whether a pane is one of ours that Herdr's snapshot restore left as a
+// bare shell. It never matches a pane running anything the user could be using.
+func (l *Launcher) isRestoredPane(ctx context.Context, pane Pane, target Target) bool {
+	if pane.Tokens[PluginID] != "" || pane.Label != TabName || !isTargetRoot(pane.CWD, target) {
+		return false
+	}
+	info, err := l.Client.ProcessInfo(ctx, pane.ID)
+	return err == nil && IsIdleShell(info)
+}
+
+// isTargetRoot also accepts the canonical root so a repository reached through a symlink,
+// where Herdr may persist either spelling of the path, still matches.
+func isTargetRoot(cwd string, target Target) bool {
+	clean := filepath.Clean(cwd)
+	return clean == target.Root || (target.CanonicalRoot != "" && clean == target.CanonicalRoot)
+}
+
+func pluginBinary() (string, error) {
+	if root := os.Getenv("HERDR_PLUGIN_ROOT"); root != "" {
+		return filepath.Join(root, "bin", PluginID), nil
+	}
+	return os.Executable()
 }
 
 func acquireLock(path string) (*os.File, error) {

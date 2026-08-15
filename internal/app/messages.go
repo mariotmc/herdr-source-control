@@ -4,11 +4,20 @@ import (
 	"time"
 
 	"github.com/mariotmc/herdr-source-control/internal/domain"
+	"github.com/mariotmc/herdr-source-control/internal/state"
 	"github.com/mariotmc/herdr-source-control/internal/ui"
 )
 
 type pollTickMsg time.Time
+type autoFetchTickMsg time.Time
 type noticeExpiredMsg struct{ ID uint64 }
+
+type autoFetchFinishedMsg struct {
+	ID      uint64
+	Record  state.Record
+	Skipped bool
+	Err     error
+}
 
 type snapshotLoadedMsg struct {
 	RequestID  uint64

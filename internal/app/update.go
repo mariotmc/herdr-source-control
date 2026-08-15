@@ -28,7 +28,14 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.focused = true
 		return m, m.requestRefresh(RefreshFocus)
 	case pollTickMsg:
+		if !m.focused {
+			return m, pollCmd()
+		}
 		return m, batchCmd(pollCmd(), m.requestRefresh(RefreshPoll))
+	case autoFetchTickMsg:
+		return m, batchCmd(autoFetchCmd(), m.startAutoFetch(false))
+	case autoFetchFinishedMsg:
+		return m, m.autoFetchFinished(msg)
 	case snapshotLoadedMsg:
 		return m, m.snapshotLoaded(msg)
 	case branchesLoadedMsg:
@@ -84,7 +91,50 @@ func (m *Model) snapshotLoaded(msg snapshotLoadedMsg) tea.Cmd {
 	if m.status.Error {
 		m.status = StatusMessage{}
 	}
-	return m.serviceQueuedRefresh()
+	return batchCmd(m.servicePendingFetch(), m.serviceQueuedRefresh())
+}
+
+func (m *Model) autoFetchReady() bool {
+	return m.repo != nil && m.snapshot != nil && !m.fetchBusy &&
+		m.mutation == OperationNone && m.syncState == nil && usableUpstream(m.snapshot.Branch)
+}
+
+func usableUpstream(branch domain.BranchState) bool {
+	return branch.State == domain.HeadAttached && branch.Upstream != "" && branch.UpstreamRef != "" &&
+		branch.RemoteName != "" && branch.RemoteRef != "" && branch.CountsKnown
+}
+
+// servicePendingFetch runs after a snapshot lands so the fetch uses the branch
+// Git just confirmed rather than the one that was current before a checkout.
+func (m *Model) servicePendingFetch() tea.Cmd {
+	if !m.pendingFetch {
+		return nil
+	}
+	command := m.startAutoFetch(m.pendingFetchForce)
+	if command == nil {
+		return nil
+	}
+	m.pendingFetch, m.pendingFetchForce = false, false
+	return command
+}
+
+func (m *Model) autoFetchFinished(msg autoFetchFinishedMsg) tea.Cmd {
+	if msg.ID != m.fetchID {
+		return nil
+	}
+	m.fetchBusy = false
+	if msg.Record.LastAttemptUnix != 0 {
+		m.lastFetchAttempt = time.Unix(msg.Record.LastAttemptUnix, 0)
+	}
+	if msg.Record.LastSuccessUnix != 0 {
+		m.lastFetchSuccess = time.Unix(msg.Record.LastSuccessUnix, 0)
+	}
+	m.lastFetchFailed = msg.Record.LastError != ""
+	if msg.Skipped {
+		return nil
+	}
+	m.logger.Debug("auto fetch", "error", msg.Err)
+	return m.requestRefresh(RefreshPoll)
 }
 
 func (m *Model) publishSnapshot(snapshot domain.Snapshot) {
@@ -235,6 +285,7 @@ func (m *Model) mutationFinished(msg mutationFinishedMsg) tea.Cmd {
 		}
 		m.mode = ModeMain
 		m.input.Blur()
+		m.pendingFetch, m.pendingFetchForce = true, true
 	}
 	m.mutation = OperationNone
 	return m.serviceQueuedRefresh()

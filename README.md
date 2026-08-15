@@ -10,6 +10,7 @@ The plugin provides:
 
 - Changed files grouped as Merge Changes, Staged Changes, and Changes
 - Automatic local status polling, focus refresh, and manual refresh
+- Automatic background fetching of the current branch's upstream, so ahead/behind stays current
 - Current branch and upstream ahead/behind status
 - Search and safe checkout of local branches
 - Creation of a local branch from the current `HEAD`
@@ -108,12 +109,50 @@ opens a No Repository view that can be refreshed after a repository is initializ
 Activating a changed file only reports that diff view is not available. In the branch picker,
 type to search, use `n` with an empty search to create a branch, and press `Enter` to select.
 
+## Freshness
+
+Two different things keep the tab current. Local status polling runs every two seconds while the
+pane is focused and never contacts a remote; a hidden tab stops polling, and a terminal that never
+reports focus keeps polling rather than going stale. Separately, a background fetch updates the
+current branch's remote-tracking ref roughly every three minutes, so ahead/behind counts reflect
+the remote rather than your last manual fetch. A fetch also runs right after a successful checkout
+or branch creation.
+
+The background fetch is the same conservative operation Sync performs: the exact configured
+upstream refspec only, without tags, pruning, or submodules, and strictly non-interactive. It
+never touches the working tree or the index. When it fails, because you are offline or have no
+credentials available, it fails silently and the last known counts stay on screen. All fetches for
+one checkout share a single three-minute throttle; linked worktrees throttle independently,
+because each one tracks its own branch.
+
+The footer shows when the remote was last checked, for example `Ready · checked 2m ago`,
+`Ready · check failed 12m ago`, or `Ready · not checked yet`.
+
+Herdr's `branch` and `git_status` sidebar tokens are Herdr's own feature; this plugin's
+contribution is keeping the remote-tracking data behind them fresh, including while the Source
+Control tab is closed. If you also want to see when checking the remote has been failing, add this
+plugin's `$sc` token to your Herdr `config.toml`:
+
+```toml
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["branch", "git_status", "$sc"]]
+```
+
+The token reads `stale` once fetching has been failing with no success for more than fifteen
+minutes, and is cleared on the next successful fetch. Without that config entry the token is
+reported but never displayed.
+
+The plugin also ships a `herdr-source-control fetch` subcommand. Herdr invokes it from the
+`workspace.focused` and `pane.focused` event hooks so refs refresh as you move around Herdr; you
+do not run it by hand, and it never opens a tab.
+
 ## Configuration
 
-Version 0.1 has no plugin configuration file. Polling interval, colors, in-app keys, sync policy,
-timeouts, and layout are fixed. The UI respects `NO_COLOR`; otherwise it adapts to terminal color
-capabilities and size. No startup hook or event hook is installed, so Source Control opens only
-when its action is invoked.
+Version 0.2 has no plugin configuration file. Polling and fetch intervals, colors, in-app keys,
+sync policy, timeouts, and layout are fixed. The UI respects `NO_COLOR`; otherwise it adapts to
+terminal color capabilities and size. No startup hook is installed, so Source Control opens only
+when its action is invoked. The two event hooks described above only run a short-lived background
+fetch.
 
 ## Update
 

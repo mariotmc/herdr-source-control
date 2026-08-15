@@ -1,6 +1,6 @@
 id = "herdr-source-control"
 name = "Source Control"
-version = "0.1.1"
+version = "0.2.0"
 min_herdr_version = "0.7.5"
 description = "Lightweight Git status, branch switching, and sync in a dedicated Herdr tab."
 platforms = ["linux"]
@@ -20,3 +20,11 @@ title = "Open Source Control"
 description = "Open or focus Source Control for the current repository."
 contexts = ["workspace", "pane"]
 command = ["./bin/herdr-source-control", "open"]
+
+[[events]]
+on = "workspace.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-source-control\" fetch"]
+
+[[events]]
+on = "pane.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-source-control\" fetch"]

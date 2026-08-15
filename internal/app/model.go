@@ -9,10 +9,14 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mariotmc/herdr-source-control/internal/domain"
+	"github.com/mariotmc/herdr-source-control/internal/state"
 	"github.com/mariotmc/herdr-source-control/internal/ui"
 )
 
-const pollInterval = 2 * time.Second
+const (
+	pollInterval      = 2 * time.Second
+	autoFetchInterval = state.FetchThrottle
+)
 
 type Mode uint8
 
@@ -79,6 +83,7 @@ type Config struct {
 	Repository        domain.Repository
 	RepositoryFactory RepositoryFactory
 	StartRoot         string
+	StateDir          string
 	Logger            *slog.Logger
 	InitialError      error
 }
@@ -123,6 +128,15 @@ type Model struct {
 	syncState        *SyncState
 	syncRefreshPhase Operation
 
+	fetchStore        state.Store
+	fetchID           uint64
+	fetchBusy         bool
+	pendingFetch      bool
+	pendingFetchForce bool
+	lastFetchAttempt  time.Time
+	lastFetchSuccess  time.Time
+	lastFetchFailed   bool
+
 	stale     bool
 	status    StatusMessage
 	lastError error
@@ -152,6 +166,9 @@ func New(config Config) *Model {
 		ctx: ctx, cancel: cancel, repo: config.Repository, factory: config.RepositoryFactory,
 		root: config.StartRoot, logger: logger, mode: ModeMain, focus: FocusRefresh,
 		input: input, styles: ui.NewStyles(), lastError: config.InitialError,
+		fetchStore: state.Store{Dir: config.StateDir}, pendingFetch: true,
+		// Herdr may never deliver focus events; assume visible so polling cannot stop silently.
+		focused: true,
 	}
 	if config.InitialError != nil {
 		model.status = StatusMessage{Text: config.InitialError.Error(), Error: true}
@@ -164,7 +181,7 @@ type discardWriter struct{}
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 func (m *Model) Init() tea.Cmd {
-	return batchCmd(m.requestRefresh(RefreshStartup), pollCmd())
+	return batchCmd(m.requestRefresh(RefreshStartup), pollCmd(), autoFetchCmd())
 }
 
 func (m *Model) Close() {
