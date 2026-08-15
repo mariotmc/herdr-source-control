@@ -6,10 +6,15 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mariotmc/herdr-source-control/internal/domain"
+	"github.com/mariotmc/herdr-source-control/internal/state"
 )
 
 func pollCmd() tea.Cmd {
 	return tea.Tick(pollInterval, func(now time.Time) tea.Msg { return pollTickMsg(now) })
+}
+
+func autoFetchCmd() tea.Cmd {
+	return tea.Tick(autoFetchInterval, func(now time.Time) tea.Msg { return autoFetchTickMsg(now) })
 }
 
 func batchCmd(commands ...tea.Cmd) tea.Cmd {
@@ -67,6 +72,38 @@ func (m *Model) startRefresh(reason RefreshReason, syncPhase Operation) tea.Cmd 
 		snapshot, err := repo.Snapshot(ctx)
 		m.logger.Debug("repository refresh", "duration", time.Since(started), "changes", len(snapshot.Changes), "error", err)
 		return snapshotLoadedMsg{RequestID: id, Epoch: epoch, Snapshot: snapshot, Repository: repo, Err: err}
+	})
+}
+
+// startAutoFetch updates remote-tracking refs in the background so Herdr's own
+// ahead/behind sidebar stays truthful. It never sets m.mutation: it must not
+// block the UI or interfere with a user-initiated Sync.
+func (m *Model) startAutoFetch(force bool) tea.Cmd {
+	if !m.autoFetchReady() {
+		return nil
+	}
+	m.fetchID++
+	m.fetchBusy = true
+	id := m.fetchID
+	repo, branch := m.repo, m.snapshot.Branch
+	store, key := m.fetchStore, state.Key(m.snapshot.Root)
+	ctx, cancel := context.WithCancel(m.ctx)
+	return m.track(func() tea.Msg {
+		defer cancel()
+		record, _ := store.Load(key)
+		if !force && record.LastAttemptUnix != 0 && time.Since(time.Unix(record.LastAttemptUnix, 0)) < autoFetchInterval {
+			return autoFetchFinishedMsg{ID: id, Record: record, Skipped: true}
+		}
+		record.LastAttemptUnix = time.Now().Unix()
+		_ = store.Save(key, record)
+		err := repo.Fetch(ctx, branch)
+		if err != nil {
+			record.LastError = err.Error()
+		} else {
+			record.LastSuccessUnix, record.LastError = time.Now().Unix(), ""
+		}
+		_ = store.Save(key, record)
+		return autoFetchFinishedMsg{ID: id, Record: record, Err: err}
 	})
 }
 

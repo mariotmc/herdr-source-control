@@ -105,6 +105,8 @@ func (c *Client) runner() Runner {
 type Pane struct {
 	ID       string
 	TabID    string
+	Label    string
+	CWD      string
 	Tokens   map[string]string
 	metadata json.RawMessage
 }
@@ -113,6 +115,8 @@ func (p *Pane) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		PaneID         string            `json:"pane_id"`
 		TabID          string            `json:"tab_id"`
+		Label          string            `json:"label"`
+		CWD            string            `json:"cwd"`
 		Tokens         map[string]string `json:"tokens"`
 		MetadataTokens map[string]string `json:"metadata_tokens"`
 		Metadata       json.RawMessage   `json:"metadata"`
@@ -121,6 +125,7 @@ func (p *Pane) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	p.ID, p.TabID = raw.PaneID, raw.TabID
+	p.Label, p.CWD = raw.Label, raw.CWD
 	p.Tokens = raw.Tokens
 	if p.Tokens == nil {
 		p.Tokens = raw.MetadataTokens
@@ -219,12 +224,7 @@ func ClassifyLiveness(info ProcessInfo) Liveness {
 	}
 	allIdentifiable := true
 	for _, process := range info.ForegroundProcesses {
-		executable := process.Name
-		if len(process.Argv) != 0 {
-			executable = process.Argv[0]
-		} else if executable == "" && process.Cmdline != "" {
-			executable = strings.Fields(process.Cmdline)[0]
-		}
+		executable := processExecutable(process)
 		if executable == "" {
 			allIdentifiable = false
 			continue
@@ -245,6 +245,42 @@ func ClassifyLiveness(info ProcessInfo) Liveness {
 		return LivenessExited
 	}
 	return LivenessIndeterminate
+}
+
+func processExecutable(process Process) string {
+	executable := process.Name
+	if len(process.Argv) != 0 {
+		executable = process.Argv[0]
+	} else if executable == "" {
+		if fields := strings.Fields(process.Cmdline); len(fields) != 0 {
+			executable = fields[0]
+		}
+	}
+	return executable
+}
+
+var idleShells = map[string]bool{
+	"bash": true, "csh": true, "dash": true, "fish": true,
+	"ksh": true, "sh": true, "tcsh": true, "zsh": true,
+}
+
+// IsIdleShell reports whether every foreground process is a bare shell, which is what
+// Herdr's snapshot restore leaves in place of a plugin pane it could not restart.
+// Anything it cannot positively identify as a shell counts as in use by the user.
+func IsIdleShell(info ProcessInfo) bool {
+	if len(info.ForegroundProcesses) == 0 {
+		return false
+	}
+	for _, process := range info.ForegroundProcesses {
+		executable := processExecutable(process)
+		if executable == "" {
+			return false
+		}
+		if !idleShells[strings.TrimPrefix(filepath.Base(executable), "-")] {
+			return false
+		}
+	}
+	return true
 }
 
 type OpenPaneRequest struct {
@@ -295,10 +331,26 @@ func (c *Client) ClosePane(ctx context.Context, paneID string) error {
 	return c.run(ctx, "plugin", "pane", "close", paneID)
 }
 
+// ClosePlainPane closes a pane Herdr no longer owns as a plugin pane, which is what a
+// snapshot-restored Source Control pane becomes.
+func (c *Client) ClosePlainPane(ctx context.Context, paneID string) error {
+	return c.run(ctx, "pane", "close", paneID)
+}
+
 func (c *Client) ReportIdentity(ctx context.Context, paneID, identity string) error {
 	return c.run(ctx, "pane", "report-metadata", paneID, "--source", PluginID, "--token", PluginID+"="+identity)
 }
 
 func (c *Client) RenameTab(ctx context.Context, tabID string) error {
 	return c.run(ctx, "tab", "rename", tabID, TabName)
+}
+
+func (c *Client) RunInPane(ctx context.Context, paneID string, argv []string) error {
+	return c.run(ctx, append([]string{"pane", "run", paneID}, argv...)...)
+}
+
+// FocusTab focuses a pane's tab. A reclaimed pane is an ordinary pane rather than a
+// plugin-owned one, so `plugin pane focus` does not apply to it.
+func (c *Client) FocusTab(ctx context.Context, tabID string) error {
+	return c.run(ctx, "tab", "focus", tabID)
 }

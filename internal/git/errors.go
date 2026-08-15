@@ -28,6 +28,7 @@ const (
 	ErrorParse
 	ErrorHerdr
 	ErrorCommand
+	ErrorMissingUpstreamRef
 )
 
 type OperationError struct {
@@ -55,6 +56,8 @@ func (e *OperationError) Error() string {
 		return "Git operation was cancelled."
 	case ErrorNoUpstream:
 		return "The current branch has no usable remote upstream."
+	case ErrorMissingUpstreamRef:
+		return "The upstream branch no longer exists on the remote."
 	case ErrorBusy:
 		return "Repository is busy. Finish the other Git operation and refresh."
 	case ErrorAuthentication:
@@ -151,6 +154,8 @@ func commandError(operation, phase string, result commandResult) error {
 		kind = ErrorAuthentication
 	case strings.Contains(lower, "could not resolve host") || strings.Contains(lower, "could not read from remote repository") || strings.Contains(lower, "connection timed out") || strings.Contains(lower, "connection refused"):
 		kind = ErrorNetwork
+	case strings.Contains(lower, "couldn't find remote ref") || strings.Contains(lower, "could not find remote ref"):
+		kind = ErrorMissingUpstreamRef
 	case operation == "push" && (strings.Contains(lower, "rejected") || strings.Contains(lower, "non-fast-forward")):
 		kind = ErrorRejectedPush
 	case operation == "create branch" && strings.Contains(lower, "already exists"):

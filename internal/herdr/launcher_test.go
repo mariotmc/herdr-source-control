@@ -15,7 +15,16 @@ set -eu
 printf '%s\n' "$*" >> "$HERDR_FAKE_DIR/calls"
 case "$1 $2 $3" in
   "pane list --workspace")
-    if [ -f "$HERDR_FAKE_DIR/identity" ]; then
+    if [ -f "$HERDR_FAKE_DIR/restored" ]; then
+      label='Source Control'
+      [ ! -f "$HERDR_FAKE_DIR/restored-label" ] || label=$(cat "$HERDR_FAKE_DIR/restored-label")
+      cwd=$(cat "$HERDR_FAKE_DIR/restored")
+      if [ -f "$HERDR_FAKE_DIR/restored-extra" ]; then
+        printf '{"id":"fake","result":{"panes":[{"pane_id":"pG","tab_id":"tD","workspace_id":"w1","label":"%s","cwd":"%s"},{"pane_id":"pH","tab_id":"tE","workspace_id":"w1","label":"%s","cwd":"%s"}]}}\n' "$label" "$cwd" "$label" "$cwd"
+      else
+        printf '{"id":"fake","result":{"panes":[{"pane_id":"pG","tab_id":"tD","workspace_id":"w1","label":"%s","cwd":"%s"}]}}\n' "$label" "$cwd"
+      fi
+    elif [ -f "$HERDR_FAKE_DIR/identity" ]; then
       identity=$(cat "$HERDR_FAKE_DIR/identity")
       printf '{"id":"fake","result":{"panes":[{"pane_id":"p1","tab_id":"t1","metadata":{"sources":[{"tokens":{"herdr-source-control":"%s"}}]}}]}}\n' "$identity"
     else
@@ -232,6 +241,197 @@ func TestConcurrentLauncherOpensAreSerialized(t *testing.T) {
 	}
 	if openCalls != 1 {
 		t.Fatalf("open calls = %d; calls = %s", openCalls, fmt.Sprint(allCalls))
+	}
+}
+
+// restore makes the fake herdr report a single snapshot-restored pane: labelled like our tab,
+// sitting in cwd, and carrying no identity token.
+func restore(t *testing.T, directory, cwd, process string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(directory, "restored"), []byte(cwd), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "process"), []byte(process), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLauncherClosesLeftoverRestoredDuplicate(t *testing.T) {
+	launcher, directory := newFakeLauncher(t)
+	t.Setenv("HERDR_PLUGIN_ROOT", filepath.Join(directory, "plugin"))
+	restore(t, directory, launcher.PWD, "stale")
+	if err := os.WriteFile(filepath.Join(directory, "restored-extra"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := launcher.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PaneID != "pG" {
+		t.Fatalf("Open() reclaimed %#v, want the first restored pane", result)
+	}
+	joined := strings.Join(calls(t, directory), "\n")
+	if !strings.Contains(joined, "pane close pH") {
+		t.Fatalf("leftover restored duplicate was not closed:\n%s", joined)
+	}
+	if strings.Contains(joined, "pane close pG") {
+		t.Fatalf("reclaimed pane must not be closed:\n%s", joined)
+	}
+}
+
+func TestLauncherReclaimsRestoredPane(t *testing.T) {
+	launcher, directory := newFakeLauncher(t)
+	pluginRoot := filepath.Join(directory, "plugin")
+	t.Setenv("HERDR_PLUGIN_ROOT", pluginRoot)
+	restore(t, directory, launcher.PWD, "stale")
+
+	result, err := launcher.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Opened || result.PaneID != "pG" || result.TabID != "tD" {
+		t.Fatalf("Open() = %#v", result)
+	}
+	got := calls(t, directory)
+	if len(got) != 6 {
+		t.Fatalf("calls = %#v", got)
+	}
+	if got[1] != "pane process-info --pane pG" {
+		t.Fatalf("process-info argv = %q", got[1])
+	}
+	binary := filepath.Join(pluginRoot, "bin", "herdr-source-control")
+	want := "pane run pG env HERDR_SOURCE_CONTROL_ROOT=" + result.Target.Root +
+		" HERDR_SOURCE_CONTROL_ID=" + result.Target.Identity +
+		" HERDR_PANE_ID=pG " + binary + " tui"
+	if got[2] != want {
+		t.Fatalf("run argv = %q, want %q", got[2], want)
+	}
+	if got[3] != "pane report-metadata pG --source herdr-source-control --token herdr-source-control="+result.Target.Identity {
+		t.Fatalf("metadata argv = %q", got[3])
+	}
+	if got[4] != "tab rename tD Source Control" || got[5] != "tab focus tD" {
+		t.Fatalf("rename/focus argv = %#v", got[4:])
+	}
+	if strings.Contains(strings.Join(got, "\n"), "plugin pane open") {
+		t.Fatalf("reclaim still opened a second tab:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func TestLauncherReclaimFallsBackToExecutableWithoutPluginRoot(t *testing.T) {
+	launcher, directory := newFakeLauncher(t)
+	t.Setenv("HERDR_PLUGIN_ROOT", "")
+	restore(t, directory, launcher.PWD, "stale")
+
+	if _, err := launcher.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := calls(t, directory)[2]; !strings.HasSuffix(got, " "+executable+" tui") {
+		t.Fatalf("run argv = %q, want binary %q", got, executable)
+	}
+}
+
+func TestLauncherDoesNotReclaimPaneRunningOurBinary(t *testing.T) {
+	t.Run("restored shape", func(t *testing.T) {
+		launcher, directory := newFakeLauncher(t)
+		restore(t, directory, launcher.PWD, "live")
+
+		result, err := launcher.Open(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Opened {
+			t.Fatalf("Open() = %#v", result)
+		}
+		joined := strings.Join(calls(t, directory), "\n")
+		if strings.Contains(joined, "pane run") {
+			t.Fatalf("clobbered a pane running our binary:\n%s", joined)
+		}
+	})
+
+	t.Run("identified pane", func(t *testing.T) {
+		launcher, directory := newFakeLauncher(t)
+		target, err := ResolveTarget(context.Background(), launcher.PWD, launcher.RepositoryRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "identity"), []byte(target.Identity), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := launcher.Open(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Opened {
+			t.Fatalf("Open() = %#v", result)
+		}
+		joined := strings.Join(calls(t, directory), "\n")
+		if strings.Contains(joined, "pane run") || !strings.Contains(joined, "plugin pane focus p1") {
+			t.Fatalf("calls =\n%s", joined)
+		}
+	})
+}
+
+func TestLauncherDoesNotReclaimPaneInAnotherDirectory(t *testing.T) {
+	launcher, directory := newFakeLauncher(t)
+	restore(t, directory, filepath.Join(directory, "other-repo"), "stale")
+
+	result, err := launcher.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Opened {
+		t.Fatalf("Open() = %#v", result)
+	}
+	joined := strings.Join(calls(t, directory), "\n")
+	if strings.Contains(joined, "pane run") || strings.Contains(joined, "pane process-info") {
+		t.Fatalf("inspected or reclaimed an unrelated tab:\n%s", joined)
+	}
+}
+
+func TestLauncherDoesNotReclaimWhenProcessInfoIsIndeterminate(t *testing.T) {
+	for _, mode := range []string{"fail", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			launcher, directory := newFakeLauncher(t)
+			restore(t, directory, launcher.PWD, mode)
+
+			result, err := launcher.Open(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Opened {
+				t.Fatalf("Open() = %#v", result)
+			}
+			joined := strings.Join(calls(t, directory), "\n")
+			if strings.Contains(joined, "pane run") {
+				t.Fatalf("reclaimed a pane with indeterminate process info:\n%s", joined)
+			}
+		})
+	}
+}
+
+func TestLauncherOpensNewPaneWhenNoReclaimCandidate(t *testing.T) {
+	launcher, directory := newFakeLauncher(t)
+	restore(t, directory, launcher.PWD, "stale")
+	if err := os.WriteFile(filepath.Join(directory, "restored-label"), []byte("Notes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := launcher.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Opened || result.PaneID != "p1" {
+		t.Fatalf("Open() = %#v", result)
+	}
+	joined := strings.Join(calls(t, directory), "\n")
+	if strings.Contains(joined, "pane run") || !strings.Contains(joined, "plugin pane open") {
+		t.Fatalf("calls =\n%s", joined)
 	}
 }
 

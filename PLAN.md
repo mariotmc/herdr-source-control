@@ -2,7 +2,7 @@
 
 ## 1. Document Status
 
-This document is the implementation contract for `herdr-source-control` version 0.1.0.
+This document is the implementation contract for `herdr-source-control` version 0.2.0.
 It is intentionally more specific than a normal roadmap: product behavior, Git semantics,
 UI states, architecture, testing, Herdr integration, packaging, and completion criteria are
 decided here so implementation can proceed without inventing missing requirements.
@@ -25,7 +25,8 @@ in the same change that alters the decision. Do not silently diverge from it.
 - Changed-file list in v1: read-only
 - Mutations in v1: branch checkout, branch creation, fetch, fast-forward, and push only
 - No Nerd Font, emoji, or private-use glyph requirement
-- No Herdr startup hooks or event hooks
+- No Herdr startup hooks. Two focus event hooks exist, and they only run a short-lived background
+  fetch; they never open a pane or tab
 - No filesystem watcher in v1; use polling, focus refresh, and manual refresh
 
 ## 2. Product Summary
@@ -101,7 +102,9 @@ Intentional improvements over the inspected implementation:
 
 - Open or focus one Source Control tab for the repository associated with the invoking pane.
 - Start the next automatic Git status check within two seconds of an external working-tree or
-  index change under normal operation. The visible update follows when that command completes.
+  index change while the pane is focused. The visible update follows when that command completes.
+- Keep remote-tracking refs current in the background so ahead/behind is truthful in the pane and
+  in Herdr's own sidebar indicators, including while no Source Control tab is open.
 - Preserve a manual Refresh control as an explicit source-of-truth action.
 - Match VS Code's group vocabulary and overall information hierarchy.
 - Make branch and sync state understandable without color or special fonts.
@@ -251,7 +254,10 @@ Render a rename or copy as `old/path -> new/path`. Use ASCII `->`, not a Unicode
 ### 5.4 Refresh behavior
 
 - Initial startup runs one immediate snapshot load.
-- A recurring timer requests a snapshot every two seconds by default.
+- A recurring timer requests a snapshot every two seconds by default, but only while the pane is
+  focused. A hidden tab keeps scheduling ticks and skips the snapshot, so it costs no subprocess.
+- Focus defaults to visible. A terminal that never reports focus events therefore keeps polling
+  rather than silently going stale.
 - An unfocused-to-focused terminal transition requests a refresh.
 - Clicking Refresh or pressing `r` requests a refresh immediately.
 - Completion of checkout, branch creation, fetch, fast-forward, or push requests a refresh after
@@ -267,8 +273,58 @@ Render a rename or copy as `old/path -> new/path`. Use ASCII `->`, not a Unicode
 - Background poll and focus refreshes do not replace the stable footer status with progress text.
   Initial, manual, and mutation refreshes remain visible.
 - Manual refresh also clears a transient informational message and retries repository discovery.
-- Refresh never fetches or contacts a remote. Ahead/behind reflects local remote-tracking refs
-  until Sync or another process fetches.
+- Refresh itself never fetches or contacts a remote. It reads local remote-tracking refs, which a
+  separate background auto-fetch keeps current.
+
+#### 5.4.1 Background auto-fetch
+
+Ahead/behind is only as truthful as the local remote-tracking ref, and Herdr renders its own
+sidebar indicators from the same refs. A background fetch therefore runs independently of refresh.
+
+- The running TUI fetches on a three-minute timer. The timer is deliberately not gated on
+  visibility: its purpose is keeping the persistent sidebar truthful while the user is not looking
+  at the Source Control tab.
+- The TUI also fetches once after its first snapshot, and again after a successful checkout or
+  branch creation. The post-mutation fetch ignores the throttle and runs after the replacement
+  snapshot lands, so it uses the branch Git just confirmed.
+- The one-shot `herdr-source-control fetch` subcommand runs from the `workspace.focused` and
+  `pane.focused` Herdr event hooks, so refs refresh as the user moves around Herdr even when no
+  Source Control tab is open.
+- All of these share one throttle of three minutes per checkout. The throttle record is keyed by
+  the working-tree root, so each linked worktree throttles independently: a fetch only updates the
+  current branch's upstream, so a key shared across worktrees would let whichever worktree fetched
+  first stop the others from refreshing their own branch. The record is stored under
+  `$HERDR_PLUGIN_STATE_DIR/fetch/<key>.json` with an atomic replace. A missing, unreadable, or
+  corrupt record reads as "never fetched" instead of failing.
+- A fetch that fails because the upstream branch no longer exists on the remote does not mark the
+  repository stale. It fails identically on every retry, so warning about it would be permanent
+  noise on every merged branch rather than something the user can act on.
+- The fetch is the canonical Section 8.8 fetch: the exact configured upstream refspec, no tags, no
+  prune, no submodules, non-interactive. It runs only for the current branch and only when that
+  branch has a usable upstream. It never touches the index or working tree.
+- Auto-fetch never sets the mutation state, so it neither blocks the UI nor interferes with a
+  user-initiated Sync, and it is skipped while a mutation or Sync is active.
+- Failures are silent and non-blocking. The last known counts remain on screen; only the footer
+  freshness text and the sidebar staleness token change.
+- A completed auto-fetch requests one ordinary refresh so new counts are published.
+- The hook command discovers the repository before doing anything else, so a hook firing on every
+  pane focus costs one cheap Git call when the throttle is closed. It always exits zero and prints
+  nothing.
+
+#### 5.4.2 Freshness reporting
+
+Silence would otherwise mean both "nothing to pull" and "could not check".
+
+- While the footer status is `Ready` and the layout is not the small size, it is suffixed with
+  freshness: `Ready · checked 2m ago`, `Ready · check failed 12m ago`, or
+  `Ready · not checked yet`.
+- The `fetch` subcommand reports a Herdr workspace metadata token named `sc` through
+  `herdr workspace report-metadata <workspace-id> --source herdr-source-control`. It sets
+  `sc=stale` when the attempt failed and no fetch has succeeded for at least fifteen minutes, and
+  clears the token otherwise. It is skipped when `HERDR_WORKSPACE_ID` is absent, and the TUI timer
+  does not report it.
+- The token is only visible if the user adds `$sc` to a Herdr sidebar row; the plugin never edits
+  Herdr configuration.
 
 ### 5.5 Branch state
 
@@ -387,7 +443,7 @@ discovers remote work that the cached ahead/behind state could not know about.
 | Push source | Mutable local branch ref | Verified captured full OID |
 | Race checks | No branch/upstream check between pull/push | Verify after every phase |
 | Confirmation | Optional confirmation dialog | Explicit button/key is sufficient |
-| Auto-fetch | Optional periodic fetch | None; local status polling only |
+| Auto-fetch | Optional periodic fetch, off by default | Always on; current branch's upstream only |
 | Authentication | Integrated Askpass prompts | Strictly non-interactive |
 | Cancellation | Optional pull cancellation; push not cancelled | Fetch cancellable; local mutations and push not cancellable |
 | Checkout choices | Local, remote, tags, detached | Local branches only |
@@ -430,7 +486,7 @@ terminal plugin. Do not add VS Code's broader behavior implicitly while fixing a
   D  docs/old.md
   U  notes.txt
  Tab focus   Enter open   b branch   s sync   r refresh   ? help   q close
- Ready                                                   auto-refresh 2s
+ Ready · checked 2m ago                            refresh 2s · fetch 3m
 ```
 
 ### 6.3 Narrow layout (`60-95` columns, `>=18` rows)
@@ -450,7 +506,7 @@ terminal plugin. Do not add VS Code's broader behavior implicitly while fixing a
   D  docs/old.md
   U  notes.txt
  b branch   s sync   r refresh   ? help
- Ready                                 auto-refresh 2s
+ Ready · checked 2m ago  refresh 2s · fetch 3m
 ```
 
 ### 6.4 Small layout (`40-59` columns or `12-17` rows)
@@ -648,7 +704,8 @@ Status priority is:
 5. `Ready`
 
 Success remains five seconds; information remains three seconds; errors remain until the next
-user action or successful refresh.
+user action or successful refresh. `Ready` alone carries the remote-freshness suffix defined in
+Section 5.4.2; no other status text is suffixed.
 
 ## 7. Technical Architecture
 
@@ -687,6 +744,9 @@ herdr-source-control/
 │   │   └── *_test.go
 │   ├── logging/
 │   │   └── logging.go
+│   ├── state/
+│   │   ├── fetch.go
+│   │   └── fetch_test.go
 │   └── ui/
 │       ├── branches.go
 │       ├── changes.go
@@ -737,15 +797,18 @@ framework, filesystem watcher, or mouse-zone library in v1.
 
 ### 7.3 Executable modes
 
-One binary has two subcommands:
+One binary has three subcommands:
 
 ```text
 herdr-source-control open
 herdr-source-control tui
+herdr-source-control fetch
 ```
 
 - `open`: short-lived Herdr action launcher; stdout/stderr are captured by Herdr plugin logs.
 - `tui`: long-lived Bubble Tea application running inside the plugin pane.
+- `fetch`: short-lived background fetch invoked from Herdr event hooks. It writes nothing to
+  stdout/stderr, suppresses the logging warning, and always exits zero.
 
 Unknown/missing subcommands print usage to stderr and exit 2.
 
@@ -931,7 +994,15 @@ normal clean/empty focus rule.
 
 ```go
 type pollTickMsg time.Time
+type autoFetchTickMsg time.Time
 type noticeExpiredMsg struct { ID uint64 }
+
+type autoFetchFinishedMsg struct {
+    ID      uint64
+    Record  state.Record
+    Skipped bool
+    Err     error
+}
 
 type snapshotLoadedMsg struct {
     RequestID uint64
@@ -1015,8 +1086,11 @@ preserves phase-specific UI feedback and keeps every state transition inside `Up
 - Mutation completion always merges `RefreshMutation` and starts the queued refresh when safe.
 - On either refresh success or failure, service accumulated reasons after applying/retaining the
   last-good snapshot.
+- Poll ticks that arrive while the pane is unfocused schedule the next tick and nothing else.
 - Branch list messages apply only while the branch modal remains open and IDs match.
 - Mutation results apply only when IDs match.
+- Auto-fetch results apply only when the fetch ID matches. A throttled result updates freshness
+  bookkeeping only; a real attempt also requests one refresh so new counts are published.
 - Closing the app cancels the root context and all cancellable read/network command contexts.
   Plugin quit is disabled while any spawned non-cancellable operation is active, explicitly
   including checkout, create, local fast-forward, and push.
@@ -1029,6 +1103,8 @@ V1 has no user configuration file. Use named constants:
 | Limit | Value |
 | --- | --- |
 | Poll interval | 2 seconds |
+| Auto-fetch interval and shared throttle | 3 minutes |
+| Staleness threshold for the `sc` sidebar token | 15 minutes |
 | Version/discovery timeout | 5 seconds |
 | Status/branch-list timeout | 30 seconds |
 | Fetch timeout | 5 minutes |
@@ -1414,7 +1490,7 @@ Required user-facing outcomes:
 ```toml
 id = "herdr-source-control"
 name = "Source Control"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.7.5"
 description = "Lightweight Git status, branch switching, and sync in a dedicated Herdr tab."
 platforms = ["linux"]
@@ -1434,9 +1510,18 @@ title = "Open Source Control"
 description = "Open or focus Source Control for the current repository."
 contexts = ["workspace", "pane"]
 command = ["./bin/herdr-source-control", "open"]
+
+[[events]]
+on = "workspace.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-source-control\" fetch"]
+
+[[events]]
+on = "pane.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-source-control\" fetch"]
 ```
 
-No `[[startup]]` or `[[events]]` sections.
+No `[[startup]]` section. The two event hooks only run the throttled background fetch from
+Section 5.4.1. They never open, focus, close, or rename a pane or tab.
 
 ### 11.2 Recommended keybinding
 
@@ -1474,12 +1559,15 @@ The `open` subcommand:
      contains only the replacement shell/another command, not the plugin binary.
    - Indeterminate: process-info fails, omits optional process/argv/cmdline data, or returns a
      transiently empty snapshot.
-9. If live, run `HERDR_BIN_PATH plugin pane focus <pane-id>` and exit success.
+9. If live, run `HERDR_BIN_PATH plugin pane focus <pane-id>`, close restored duplicates as defined
+   in Section 11.3.1, and exit success.
 10. If definitely exited, close that plugin pane and take a fresh pane snapshot before opening a
     replacement.
-11. If indeterminate, focus the identity-matched plugin pane and return success. Never close a
-    pane solely because process inspection is unavailable.
-12. Otherwise run:
+11. If indeterminate, focus the identity-matched plugin pane, close restored duplicates, and
+    return success. Never close a pane solely because process inspection is unavailable.
+12. If no identity-matched pane was focused, attempt to reclaim a restored pane as defined in
+    Section 11.3.1. On success, close any other restored duplicate and return success.
+13. Otherwise run:
 
 ```text
 HERDR_BIN_PATH plugin pane open
@@ -1493,8 +1581,8 @@ HERDR_BIN_PATH plugin pane open
   --focus
 ```
 
-13. Decode the response and obtain pane/tab IDs.
-14. Before releasing the lock, establish identity atomically from the launcher's perspective:
+14. Decode the response and obtain pane/tab IDs.
+15. Before releasing the lock, establish identity atomically from the launcher's perspective:
 
 ```text
 HERDR_BIN_PATH pane report-metadata
@@ -1503,13 +1591,47 @@ HERDR_BIN_PATH pane report-metadata
   <pane-id>
 ```
 
-15. If metadata reporting fails, close the just-opened plugin pane and return an error rather
+16. If metadata reporting fails, close the just-opened plugin pane and return an error rather
     than leaving an unidentifiable duplicate candidate.
-16. Run `HERDR_BIN_PATH tab rename <tab-id> Source Control`.
-17. Release the lock.
+17. Run `HERDR_BIN_PATH tab rename <tab-id> Source Control`.
+18. Release the lock.
 
 Use `HERDR_BIN_PATH`, falling back to `herdr`. Invoke directly through argv. Treat malformed Herdr
 JSON as an error, not as pane absence.
+
+#### 11.3.1 Restored-pane reclaim
+
+When the Herdr server restarts, snapshot restore brings the tab back as a plain shell. Herdr
+persists only a pane's cwd and label; the identity token is display-only and is not persisted, so
+such a pane cannot be matched by token and would otherwise cause a second Source Control tab, one
+blank and one working.
+
+Reclaim restarts the plugin inside the restored pane in place:
+
+```text
+HERDR_BIN_PATH pane run <pane-id> env \
+  HERDR_SOURCE_CONTROL_ROOT=<root> \
+  HERDR_SOURCE_CONTROL_ID=<identity-hash> \
+  HERDR_PANE_ID=<pane-id> \
+  <plugin-binary> tui
+```
+
+It then reports identity, renames the tab, and focuses it with `tab focus`. A reclaimed pane is an
+ordinary pane rather than a plugin-owned one, so `plugin pane focus` does not apply to it.
+
+Once a live pane is in use, every other restored pane for the same repository is closed with
+`pane close`. Cleanup is best effort: failing to tidy up must never fail the open.
+
+A pane qualifies as restored only when all of the following hold:
+
+- Its label is exactly `Source Control`.
+- Its cwd equals the repository root, or the canonical root when discovery evaluated a symlink.
+- It carries no `herdr-source-control` metadata token.
+- `pane process-info` succeeds and every foreground process is a bare shell.
+
+Anything that cannot be positively identified as a shell counts as in use by the user, and an
+absent or empty process list never qualifies. These conditions exist so reclaim and cleanup can
+never take over or close a pane the user is working in.
 
 ### 11.4 TUI identity
 
@@ -1520,8 +1642,10 @@ herdr pane report-metadata --source herdr-source-control --token herdr-source-co
 ```
 
 Metadata failure here is nonfatal because the launcher already established it. No heartbeat is
-required because no automatic event hook depends on liveness. Restored dead plugin panes are
-detected by `pane process-info` on the next explicit Open action, closed, and replaced.
+required because the event hooks run a separate short-lived process and do not depend on pane
+liveness. Restored dead plugin panes are detected by `pane process-info` on the next explicit Open
+action, closed, and replaced; panes that snapshot restore left as bare shells are reclaimed in
+place instead, as defined in Section 11.3.1.
 
 ### 11.5 Quit behavior
 
