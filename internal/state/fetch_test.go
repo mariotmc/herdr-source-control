@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSaveAndLoadRoundTripUsesPrivatePermissions(t *testing.T) {
@@ -104,5 +105,26 @@ func TestKeyIsStableSixteenHexCharacters(t *testing.T) {
 	}
 	if key != Key("/repo/.git") {
 		t.Fatal("Key() is not stable")
+	}
+}
+
+func TestStaleOnlyWhenFetchingIsBrokenAndUnverified(t *testing.T) {
+	after := 15 * time.Minute
+	now := time.Now().Unix()
+	cases := []struct {
+		name   string
+		record Record
+		want   bool
+	}{
+		{"healthy", Record{LastSuccessUnix: now}, false},
+		{"failing but verified recently", Record{LastError: "boom", LastSuccessUnix: now}, false},
+		{"failing and never verified", Record{LastError: "boom"}, true},
+		{"failing and last success too old", Record{LastError: "boom", LastSuccessUnix: time.Now().Add(-time.Hour).Unix()}, true},
+		{"permanent failure is not staleness", Record{LastError: "upstream gone", LastErrorPermanent: true}, false},
+	}
+	for _, test := range cases {
+		if got := test.record.Stale(after); got != test.want {
+			t.Errorf("%s: Stale() = %v, want %v", test.name, got, test.want)
+		}
 	}
 }

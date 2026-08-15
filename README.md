@@ -135,12 +135,17 @@ plugin's `$sc` token to your Herdr `config.toml`:
 
 ```toml
 [ui.sidebar.spaces]
-rows = [["state_icon", "workspace"], ["branch", "git_status", "$sc"]]
+rows = [["state_icon", "workspace"], ["git_status", "$sc", "branch"]]
 ```
 
+Put the short tokens before `branch`: tokens are truncated from the right, so a long branch name
+would otherwise push the indicator out of the sidebar entirely.
+
 The token reads `stale` once fetching has been failing with no success for more than fifteen
-minutes, and is cleared on the next successful fetch. Without that config entry the token is
-reported but never displayed.
+minutes, and is cleared on the next successful fetch. It is re-asserted on every focus event, so a
+badge left behind by a transient failure clears itself as soon as you return to that space. An
+upstream branch deleted from the remote never marks a repository stale, because every retry fails
+the same way. Without that config entry the token is reported but never displayed.
 
 The plugin also ships a `herdr-source-control fetch` subcommand. Herdr invokes it from the
 `workspace.focused` and `pane.focused` event hooks so refs refresh as you move around Herdr; you

@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	version = "0.2.0"
+	version = "0.2.1"
 	commit  = "unknown"
 )
 
@@ -97,6 +97,10 @@ func runFetch(ctx context.Context, logger *slog.Logger, stateDir string) {
 	key := state.Key(discovery.Root)
 	record, _ := store.Load(key)
 	if record.LastAttemptUnix != 0 && time.Since(time.Unix(record.LastAttemptUnix, 0)) < fetchThrottle {
+		// Re-assert the badge even when throttled: it is set per workspace but tracked per
+		// repository, so without this a flag raised by one transient failure can outlive the
+		// success that should have cleared it.
+		reportSidebarToken(ctx, record.Stale(fetchStaleAfter))
 		return
 	}
 
@@ -120,29 +124,29 @@ func runFetch(ctx context.Context, logger *slog.Logger, stateDir string) {
 	}
 	fetchErr := repository.Fetch(ctx, branch)
 	if fetchErr != nil {
+		// A deleted upstream fails on every retry, so warning about it would be permanent noise
+		// on every merged branch rather than something the user can act on.
 		record.LastError = fetchErr.Error()
+		record.LastErrorPermanent = gitrepo.IsKind(fetchErr, gitrepo.ErrorMissingUpstreamRef)
 	} else {
-		record.LastSuccessUnix, record.LastError = time.Now().Unix(), ""
+		record.LastSuccessUnix, record.LastError, record.LastErrorPermanent = time.Now().Unix(), "", false
 	}
 	if err := store.Save(key, record); err != nil {
 		logger.Warn("record background fetch", "error", err)
 	}
 	logger.Debug("background fetch", "root", snapshot.Root, "error", fetchErr)
-	// A deleted upstream fails on every retry, so warning about it would be permanent noise on
-	// every merged branch rather than something the user can act on.
-	trustworthy := fetchErr == nil || gitrepo.IsKind(fetchErr, gitrepo.ErrorMissingUpstreamRef)
-	reportSidebarToken(ctx, record, trustworthy)
+	reportSidebarToken(ctx, record.Stale(fetchStaleAfter))
 }
 
 // reportSidebarToken tells Herdr whether the ahead/behind counts it renders from
 // local remote-tracking refs can still be trusted.
-func reportSidebarToken(ctx context.Context, record state.Record, success bool) {
+func reportSidebarToken(ctx context.Context, stale bool) {
 	workspace := os.Getenv("HERDR_WORKSPACE_ID")
 	if workspace == "" {
 		return
 	}
 	args := []string{"workspace", "report-metadata", workspace, "--source", herdr.PluginID, "--clear-token", sidebarTokenName}
-	if !success && (record.LastSuccessUnix == 0 || time.Since(time.Unix(record.LastSuccessUnix, 0)) >= fetchStaleAfter) {
+	if stale {
 		args = []string{"workspace", "report-metadata", workspace, "--source", herdr.PluginID, "--token", sidebarTokenName + "=stale"}
 	}
 	binary := os.Getenv("HERDR_BIN_PATH")

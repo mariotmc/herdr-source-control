@@ -24,6 +24,18 @@ type Record struct {
 	LastAttemptUnix int64  `json:"last_attempt_unix"`
 	LastSuccessUnix int64  `json:"last_success_unix"`
 	LastError       string `json:"last_error"`
+	// LastErrorPermanent marks a failure that every retry reproduces, such as an upstream branch
+	// deleted from the remote. Those must not be reported as untrustworthy remote data.
+	LastErrorPermanent bool `json:"last_error_permanent,omitempty"`
+}
+
+// Stale reports whether the remote data behind this repository's counts can no longer be
+// trusted: fetching is failing and has not succeeded within after.
+func (r Record) Stale(after time.Duration) bool {
+	if r.LastError == "" || r.LastErrorPermanent {
+		return false
+	}
+	return r.LastSuccessUnix == 0 || time.Since(time.Unix(r.LastSuccessUnix, 0)) >= after
 }
 
 type Store struct {

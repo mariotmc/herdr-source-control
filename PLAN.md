@@ -320,9 +320,14 @@ Silence would otherwise mean both "nothing to pull" and "could not check".
   `Ready · not checked yet`.
 - The `fetch` subcommand reports a Herdr workspace metadata token named `sc` through
   `herdr workspace report-metadata <workspace-id> --source herdr-source-control`. It sets
-  `sc=stale` when the attempt failed and no fetch has succeeded for at least fifteen minutes, and
-  clears the token otherwise. It is skipped when `HERDR_WORKSPACE_ID` is absent, and the TUI timer
-  does not report it.
+  `sc=stale` when the recorded state shows fetching failing with no success for at least fifteen
+  minutes, and clears the token otherwise. It is skipped when `HERDR_WORKSPACE_ID` is absent, and
+  the TUI timer does not report it.
+- The token is re-asserted on every hook invocation, including throttled ones. The token is per
+  workspace while the fetch record is per checkout, so without this a badge raised by a transient
+  failure can outlive the success that should have cleared it.
+- A permanent failure, currently only an upstream branch deleted from the remote, is recorded on
+  the fetch record and never counts as staleness.
 - The token is only visible if the user adds `$sc` to a Herdr sidebar row; the plugin never edits
   Herdr configuration.
 
